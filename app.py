@@ -1,17 +1,19 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
 import pandas as pd
 import joblib
 import xgboost as xgb
 import os
+from flask_cors import CORS
 
-# Load model + scaler (same folder la irukkanum)
+# === Load model and scaler ===
 model = xgb.XGBClassifier()
-model.load_model("phishing_xgboost_model.json")
+model.load_model("phishing_xgboost_model.json")   # file repo root la irukkanum
 scaler = joblib.load("scaler.pkl")
 
-feature_names = ['length_url','nb_dots','nb_hyphens','nb_at','nb_slash','nb_www','nb_com']
+# === Feature names ===
+feature_names = ['length_url', 'nb_dots', 'nb_hyphens', 'nb_at', 'nb_slash', 'nb_www', 'nb_com']
 
+# === Feature extraction function ===
 def extract_features(url):
     url = str(url)
     return {
@@ -24,36 +26,52 @@ def extract_features(url):
         'nb_com': 1 if '.com' in url else 0
     }
 
+# === Flask App ===
 app = Flask(__name__)
-# CORS allowed — extension ku fetch allow aagum
-CORS(app)
+CORS(app)  # allow API calls from extension/browser
 
 @app.route("/")
 def home():
-    return "Phishing Detection API is Live!"
+    return "✅ Phishing Detection API is running!"
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    data = request.get_json(silent=True) or {}
-    url = data.get("url", "").strip()
-    if not url:
-        return jsonify({"error":"URL is required"}), 400
+    try:
+        data = request.get_json()
+        url = data.get("url", "").strip()
 
-    feats = extract_features(url)
-    df = pd.DataFrame([feats], columns=feature_names)
-    X = scaler.transform(df.values)
+        if not url:
+            return jsonify({"error": "URL is required"}), 400
 
-    proba = model.predict_proba(X)[0]
-    ph = float(proba[1]); lg = float(proba[0])
+        # Extract & scale
+        features = extract_features(url)
+        df_features = pd.DataFrame([features], columns=feature_names)
+        scaled_features = scaler.transform(df_features.values)
 
-    if ph > 0.85:
-        label, conf = "Phishing", ph
-    elif lg > 0.84:
-        label, conf = "Legitimate", lg
-    else:
-        label, conf = "Uncertain", max(ph, lg)
+        # Predict
+        proba = model.predict_proba(scaled_features)[0]
+        phishing_confidence = proba[1]
+        legit_confidence = proba[0]
 
-    return jsonify({"url": url, "prediction": label, "confidence": round(conf, 4)})
+        # Custom threshold
+        if phishing_confidence > 0.85:
+            label = "Phishing"
+            confidence = phishing_confidence
+        elif legit_confidence > 0.84:
+            label = "Legitimate"
+            confidence = legit_confidence
+        else:
+            label = "Uncertain"
+            confidence = max(phishing_confidence, legit_confidence)
+
+        return jsonify({
+            "url": url,
+            "prediction": label,
+            "confidence": round(float(confidence), 4)
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
